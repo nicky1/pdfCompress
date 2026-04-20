@@ -50,7 +50,22 @@ jobs:
           New-Item -ItemType Directory -Path $gsOut -Force | Out-Null
           Copy-Item "build/Release/pdf_compress.exe" $dist -Force
 
-          $gsExe = (Get-Command gswin64c.exe -ErrorAction SilentlyContinue).Source
+          # choco 安装后当前 step 里 PATH 可能未刷新，优先直接扫描常见安装目录。
+          $candidates = @()
+          $roots = @("$env:ProgramFiles\gs", "${env:ProgramFiles(x86)}\gs")
+          foreach ($root in $roots) {
+            if (Test-Path $root) {
+              $candidates += Get-ChildItem -Path $root -Recurse -Filter gswin64c.exe -File -ErrorAction SilentlyContinue
+              $candidates += Get-ChildItem -Path $root -Recurse -Filter gswin32c.exe -File -ErrorAction SilentlyContinue
+            }
+          }
+          $gsExe = $null
+          if ($candidates.Count -gt 0) {
+            $gsExe = ($candidates | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          }
+          if (-not $gsExe) {
+            $gsExe = (Get-Command gswin64c.exe -ErrorAction SilentlyContinue).Source
+          }
           if (-not $gsExe) {
             $gsExe = (Get-Command gswin32c.exe -ErrorAction SilentlyContinue).Source
           }
