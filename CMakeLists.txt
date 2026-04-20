@@ -1,6 +1,14 @@
 # Windows 下本工程会生成可执行文件 pdf_compress.exe（MSVC 常见路径：build/Release/pdf_compress.exe）。
 # CMake 在 Windows 上对 add_executable 的目标名会自动追加 .exe 后缀，无需手写 .exe。
 cmake_minimum_required(VERSION 3.16)
+if(POLICY CMP0091)
+  cmake_policy(SET CMP0091 NEW)
+endif()
+# vcpkg x64-windows-static 使用静态 CRT（/MT）。主程序若保持 CMake 默认的 /MD，
+# 会与依赖里的 LIBCMT 混链，触发 LNK2005/LNK1169（重复定义 CRT 等符号）。
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 project(pdf_compress LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
