@@ -4,9 +4,9 @@ cmake_minimum_required(VERSION 3.16)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-# vcpkg x64-windows-static 使用静态 CRT（/MT）。主程序若保持 CMake 默认的 /MD，
-# 会与依赖里的 LIBCMT 混链，触发 LNK2005/LNK1169（重复定义 CRT 等符号）。
-if(MSVC)
+# vcpkg x64-windows-static 使用静态 CRT（/MT）。主程序须同为 /MT。
+# 注意：在 project() 之前 MSVC 变量往往尚未置位，不能用 if(MSVC)；本工程仅 Windows。
+if(WIN32)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 project(pdf_compress LANGUAGES CXX)
@@ -21,6 +21,11 @@ endif()
 find_package(qpdf CONFIG REQUIRED)
 
 add_executable(pdf_compress WIN32 src/main.cpp)
+if(MSVC)
+  set_property(
+    TARGET pdf_compress
+    PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 target_link_libraries(
   pdf_compress
   PRIVATE
