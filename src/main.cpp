@@ -134,6 +134,20 @@ std::wstring QuoteArg(std::wstring const& value) {
 }
 
 std::wstring FindGhostscriptExe() {
+    auto file_exists = [](std::wstring const& p) -> bool {
+        DWORD attrs = GetFileAttributesW(p.c_str());
+        return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+    };
+    auto join = [](std::wstring const& a, std::wstring const& b) -> std::wstring {
+        if (a.empty()) {
+            return b;
+        }
+        if (a.back() == L'\\' || a.back() == L'/') {
+            return a + b;
+        }
+        return a + L"\\" + b;
+    };
+
     wchar_t full[MAX_PATH] = {0};
     DWORD n = SearchPathW(nullptr, L"gswin64c.exe", nullptr, MAX_PATH, full, nullptr);
     if (n > 0 && n < MAX_PATH) {
@@ -146,6 +160,71 @@ std::wstring FindGhostscriptExe() {
     n = SearchPathW(nullptr, L"gs.exe", nullptr, MAX_PATH, full, nullptr);
     if (n > 0 && n < MAX_PATH) {
         return std::wstring(full);
+    }
+
+    // 允许将 Ghostscript 随程序一起分发。
+    wchar_t module_path[MAX_PATH] = {0};
+    DWORD m = GetModuleFileNameW(nullptr, module_path, MAX_PATH);
+    if (m > 0 && m < MAX_PATH) {
+        fs::path exe_dir = fs::path(module_path).parent_path();
+        std::vector<fs::path> bundled_candidates = {
+            exe_dir / "gswin64c.exe",
+            exe_dir / "gswin32c.exe",
+            exe_dir / "tools" / "ghostscript" / "gswin64c.exe",
+            exe_dir / "tools" / "ghostscript" / "gswin32c.exe",
+        };
+        for (auto const& c : bundled_candidates) {
+            if (file_exists(c.wstring())) {
+                return c.wstring();
+            }
+        }
+        fs::path bundled_root = exe_dir / "tools" / "ghostscript";
+        if (fs::exists(bundled_root) && fs::is_directory(bundled_root)) {
+            for (auto const& entry : fs::recursive_directory_iterator(bundled_root)) {
+                if (!entry.is_regular_file()) {
+                    continue;
+                }
+                std::wstring filename = entry.path().filename().wstring();
+                std::transform(filename.begin(), filename.end(), filename.begin(), [](wchar_t ch) {
+                    return static_cast<wchar_t>(std::towlower(static_cast<std::wint_t>(ch)));
+                });
+                if (filename == L"gswin64c.exe" || filename == L"gswin32c.exe" || filename == L"gs.exe") {
+                    return entry.path().wstring();
+                }
+            }
+        }
+    }
+
+    // 扫描常见安装目录：C:\Program Files\gs\gs*\bin\gswin64c.exe
+    std::vector<std::wstring> roots;
+    wchar_t envbuf[32767] = {0};
+    DWORD e = GetEnvironmentVariableW(L"ProgramFiles", envbuf, 32767);
+    if (e > 0 && e < 32767) {
+        roots.emplace_back(envbuf);
+    }
+    e = GetEnvironmentVariableW(L"ProgramFiles(x86)", envbuf, 32767);
+    if (e > 0 && e < 32767) {
+        roots.emplace_back(envbuf);
+    }
+
+    for (auto const& root : roots) {
+        fs::path gs_root = fs::path(join(root, L"gs"));
+        if (!fs::exists(gs_root) || !fs::is_directory(gs_root)) {
+            continue;
+        }
+        for (auto const& entry : fs::directory_iterator(gs_root)) {
+            if (!entry.is_directory()) {
+                continue;
+            }
+            fs::path p64 = entry.path() / "bin" / "gswin64c.exe";
+            if (file_exists(p64.wstring())) {
+                return p64.wstring();
+            }
+            fs::path p32 = entry.path() / "bin" / "gswin32c.exe";
+            if (file_exists(p32.wstring())) {
+                return p32.wstring();
+            }
+        }
     }
     return {};
 }
@@ -167,8 +246,8 @@ std::wstring PdfSettingsForMode(CompressionMode mode) {
 void RunGhostscriptCompress(std::wstring const& in_w, std::wstring const& out_w, CompressionMode mode) {
     std::wstring const gs_exe = FindGhostscriptExe();
     if (gs_exe.empty()) {
-        throw std::runtime_error(
-            "未找到 Ghostscript。请先安装 Ghostscript，并确保 gswin64c.exe 在 PATH 环境变量中。");
+        throw std::runtime_error("未找到 Ghostscript。请安装后重试；程序会自动从 PATH、程序目录、"
+                                 "Program Files/gs 下查找 gswin64c.exe。");
     }
 
     std::wstring const settings = PdfSettingsForMode(mode);

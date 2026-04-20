@@ -1,6 +1,6 @@
-# 在 GitHub 云端 Windows 环境编译出 pdf_compress.exe，并作为 Artifact 供下载。
-# 使用方式：把本仓库推到 GitHub → 打开 Actions → 选择 “Build Windows exe” → 进入最新一次运行 → Artifacts 下载 zip（解压即 exe）。
-# 本地电脑无需安装 CMake / vcpkg；仅需浏览器下载产物（首次编译约数分钟，请等待工作流完成）。
+# 在 GitHub 云端 Windows 环境构建打包：pdf_compress.exe + Ghostscript（强压缩模式可直接用）。
+# 使用方式：把本仓库推到 GitHub → 打开 Actions → 选择 “Build Windows exe” → 进入最新一次运行 → 下载 Artifacts 的 zip 并解压后直接运行。
+# 本地电脑无需安装 CMake / vcpkg / Ghostscript；仅需浏览器下载产物（首次编译约数分钟，请等待工作流完成）。
 name: Build Windows exe
 
 on:
@@ -37,8 +37,31 @@ jobs:
         shell: pwsh
         run: cmake --build build --config Release
 
-      - name: Upload exe
+      - name: Install Ghostscript
+        shell: pwsh
+        run: choco install ghostscript -y
+
+      - name: Bundle exe with Ghostscript
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:GITHUB_WORKSPACE "dist/pdf_compress-windows-x64"
+          $gsOut = Join-Path $dist "tools/ghostscript"
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+          New-Item -ItemType Directory -Path $gsOut -Force | Out-Null
+          Copy-Item "build/Release/pdf_compress.exe" $dist -Force
+
+          $gsExe = (Get-Command gswin64c.exe -ErrorAction SilentlyContinue).Source
+          if (-not $gsExe) {
+            $gsExe = (Get-Command gswin32c.exe -ErrorAction SilentlyContinue).Source
+          }
+          if (-not $gsExe) {
+            throw "Ghostscript executable not found after installation."
+          }
+          $gsRoot = Split-Path (Split-Path $gsExe -Parent) -Parent
+          Copy-Item $gsRoot $gsOut -Recurse -Force
+
+      - name: Upload bundled package
         uses: actions/upload-artifact@v4
         with:
           name: pdf_compress-windows-x64
-          path: build/Release/pdf_compress.exe
+          path: dist/pdf_compress-windows-x64
