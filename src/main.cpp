@@ -13,7 +13,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
 #include <cwctype>
 #include <filesystem>
 #include <memory>
@@ -33,18 +32,12 @@ constexpr int kIdCompress = 1002;
 constexpr int kIdPathEdit = 1003;
 constexpr int kIdStatus = 1004;
 constexpr int kIdModeCombo = 1005;
-constexpr int kIdCustomDpiEdit = 1006;
-constexpr int kIdCustomQualityEdit = 1007;
 
 struct AppState {
     HWND hwnd_main = nullptr;
     HWND hwnd_path = nullptr;
     HWND hwnd_status = nullptr;
     HWND hwnd_mode = nullptr;
-    HWND hwnd_custom_dpi_label = nullptr;
-    HWND hwnd_custom_dpi_edit = nullptr;
-    HWND hwnd_custom_quality_label = nullptr;
-    HWND hwnd_custom_quality_edit = nullptr;
 };
 
 enum class CompressionMode {
@@ -52,7 +45,6 @@ enum class CompressionMode {
     kStrongHigh = 1,
     kStrongMedium = 2,
     kStrongLow = 3,
-    kStrongCustom = 4,
 };
 
 std::wstring Utf8ToWide(std::string const& utf8) {
@@ -265,80 +257,18 @@ struct GsProfile {
     int jpeg_q = 70;
 };
 
-bool IsCustomMode(CompressionMode mode) {
-    return mode == CompressionMode::kStrongCustom;
-}
-
 GsProfile ProfileForMode(CompressionMode mode) {
     switch (mode) {
     case CompressionMode::kStrongHigh:
-        // 高质量：较高分辨率 + 高 JPEG 质量
-        return GsProfile{240, 88};
+        return GsProfile{400, 85};
     case CompressionMode::kStrongMedium:
-        // 中质量：明显降分辨率和质量，确保与高质量拉开体积差
-        return GsProfile{150, 62};
+        return GsProfile{400, 85};
     case CompressionMode::kStrongLow:
-        // 低质量：比中质量更小，但避免过度发糊
-        return GsProfile{130, 56};
-    case CompressionMode::kStrongCustom:
-        // 由 UI 输入覆盖，兜底值仅用于异常场景。
-        return GsProfile{150, 65};
+        return GsProfile{400, 85};
     case CompressionMode::kNormalQpdf:
     default:
         return GsProfile{150, 68};
     }
-}
-
-void SetCustomControlEnabled(AppState* app, bool enabled) {
-    if (!app) {
-        return;
-    }
-    if (app->hwnd_custom_dpi_label) {
-        EnableWindow(app->hwnd_custom_dpi_label, enabled ? TRUE : FALSE);
-    }
-    if (app->hwnd_custom_dpi_edit) {
-        EnableWindow(app->hwnd_custom_dpi_edit, enabled ? TRUE : FALSE);
-    }
-    if (app->hwnd_custom_quality_label) {
-        EnableWindow(app->hwnd_custom_quality_label, enabled ? TRUE : FALSE);
-    }
-    if (app->hwnd_custom_quality_edit) {
-        EnableWindow(app->hwnd_custom_quality_edit, enabled ? TRUE : FALSE);
-    }
-}
-
-void SyncCustomControlState(AppState* app) {
-    if (!app || !app->hwnd_mode) {
-        return;
-    }
-    LRESULT const sel = SendMessageW(app->hwnd_mode, CB_GETCURSEL, 0, 0);
-    CompressionMode const mode =
-        sel == CB_ERR ? CompressionMode::kStrongMedium : static_cast<CompressionMode>(sel);
-    SetCustomControlEnabled(app, IsCustomMode(mode));
-}
-
-bool TryParseIntFromEdit(HWND edit, int min_value, int max_value, int* out_value) {
-    if (!edit || !out_value) {
-        return false;
-    }
-    int const len = GetWindowTextLengthW(edit);
-    if (len <= 0) {
-        return false;
-    }
-    std::vector<wchar_t> buf(static_cast<size_t>(len) + 1, L'\0');
-    if (GetWindowTextW(edit, buf.data(), static_cast<int>(buf.size())) <= 0) {
-        return false;
-    }
-    wchar_t* end = nullptr;
-    long const v = wcstol(buf.data(), &end, 10);
-    if (end == buf.data() || *end != L'\0') {
-        return false;
-    }
-    if (v < min_value || v > max_value) {
-        return false;
-    }
-    *out_value = static_cast<int>(v);
-    return true;
 }
 
 void RunGhostscriptCompress(std::wstring const& in_w, std::wstring const& out_w, GsProfile const& profile) {
@@ -475,25 +405,11 @@ void OnCompress(AppState* app) {
         mode_sel == CB_ERR ? CompressionMode::kStrongMedium : static_cast<CompressionMode>(mode_sel);
 
     GsProfile gs_profile = ProfileForMode(mode);
-    if (IsCustomMode(mode)) {
-        int custom_dpi = 0;
-        if (!TryParseIntFromEdit(app->hwnd_custom_dpi_edit, 72, 400, &custom_dpi)) {
-            MessageBoxW(app->hwnd_main, L"自定义 DPI 请输入 72-400 之间的整数。", L"提示", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        int custom_quality = 0;
-        if (!TryParseIntFromEdit(app->hwnd_custom_quality_edit, 30, 95, &custom_quality)) {
-            MessageBoxW(app->hwnd_main, L"自定义 JPEG 质量请输入 30-95 之间的整数。", L"提示", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        gs_profile = GsProfile{custom_dpi, custom_quality};
-    }
 
     SetStatus(app, L"正在压缩…");
     EnableWindow(GetDlgItem(app->hwnd_main, kIdPick), FALSE);
     EnableWindow(GetDlgItem(app->hwnd_main, kIdCompress), FALSE);
     EnableWindow(GetDlgItem(app->hwnd_main, kIdModeCombo), FALSE);
-    SetCustomControlEnabled(app, false);
 
     try {
         if (mode == CompressionMode::kNormalQpdf) {
@@ -505,7 +421,6 @@ void OnCompress(AppState* app) {
         EnableWindow(GetDlgItem(app->hwnd_main, kIdPick), TRUE);
         EnableWindow(GetDlgItem(app->hwnd_main, kIdCompress), TRUE);
         EnableWindow(GetDlgItem(app->hwnd_main, kIdModeCombo), TRUE);
-        SyncCustomControlState(app);
         SetStatus(app, L"压缩失败。");
         auto const wmsg = Utf8ToWide(e.what());
         MessageBoxW(app->hwnd_main, wmsg.empty() ? L"未知错误。" : wmsg.c_str(), L"错误", MB_OK | MB_ICONERROR);
@@ -515,7 +430,6 @@ void OnCompress(AppState* app) {
     EnableWindow(GetDlgItem(app->hwnd_main, kIdPick), TRUE);
     EnableWindow(GetDlgItem(app->hwnd_main, kIdCompress), TRUE);
     EnableWindow(GetDlgItem(app->hwnd_main, kIdModeCombo), TRUE);
-    SyncCustomControlState(app);
     SetStatus(app, L"完成。");
     MessageBoxW(app->hwnd_main, out_w.c_str(), L"已保存", MB_OK | MB_ICONINFORMATION);
 }
@@ -618,64 +532,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         SendMessageW(app->hwnd_mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"强压缩-高质量（Ghostscript）"));
         SendMessageW(app->hwnd_mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"强压缩-中质量（Ghostscript）"));
         SendMessageW(app->hwnd_mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"强压缩-低质量（Ghostscript）"));
-        SendMessageW(app->hwnd_mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"强压缩-自定义（Ghostscript）"));
         SendMessageW(app->hwnd_mode, CB_SETCURSEL, static_cast<WPARAM>(CompressionMode::kStrongMedium), 0);
-
-        app->hwnd_custom_dpi_label = CreateWindowExW(
-            0,
-            L"STATIC",
-            L"自定义 DPI：",
-            WS_CHILD | WS_VISIBLE,
-            280,
-            108,
-            80,
-            20,
-            hwnd,
-            nullptr,
-            inst,
-            nullptr);
-
-        app->hwnd_custom_dpi_edit = CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            L"EDIT",
-            L"150",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
-            364,
-            104,
-            70,
-            24,
-            hwnd,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCustomDpiEdit)),
-            inst,
-            nullptr);
-
-        app->hwnd_custom_quality_label = CreateWindowExW(
-            0,
-            L"STATIC",
-            L"JPEG质量：",
-            WS_CHILD | WS_VISIBLE,
-            442,
-            108,
-            72,
-            20,
-            hwnd,
-            nullptr,
-            inst,
-            nullptr);
-
-        app->hwnd_custom_quality_edit = CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            L"EDIT",
-            L"65",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
-            516,
-            104,
-            56,
-            24,
-            hwnd,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCustomQualityEdit)),
-            inst,
-            nullptr);
 
         app->hwnd_status = CreateWindowExW(
             0,
@@ -683,7 +540,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             L"就绪",
             WS_CHILD | WS_VISIBLE,
             12,
-            156,
+            124,
             560,
             20,
             hwnd,
@@ -699,7 +556,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return TRUE;
             },
             reinterpret_cast<LPARAM>(ui_font));
-        SyncCustomControlState(app);
 
         return 0;
     }
@@ -719,16 +575,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
         }
-        if (id == kIdModeCombo && code == CBN_SELCHANGE) {
-            SyncCustomControlState(app);
-            return 0;
-        }
         break;
     }
     case WM_GETMINMAXINFO: {
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
         mmi->ptMinTrackSize.x = 620;
-        mmi->ptMinTrackSize.y = 260;
+        mmi->ptMinTrackSize.y = 220;
         return 0;
     }
     case WM_SIZE: {
@@ -740,11 +592,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         (void)cy;
         MoveWindow(app->hwnd_path, 12, 36, std::max(200, cx - 24), 24, TRUE);
         MoveWindow(app->hwnd_mode, std::max(220, cx - 264), 72, 252, 180, TRUE);
-        MoveWindow(app->hwnd_custom_dpi_label, std::max(220, cx - 264), 108, 80, 20, TRUE);
-        MoveWindow(app->hwnd_custom_dpi_edit, std::max(300, cx - 184), 104, 70, 24, TRUE);
-        MoveWindow(app->hwnd_custom_quality_label, std::max(378, cx - 106), 108, 72, 20, TRUE);
-        MoveWindow(app->hwnd_custom_quality_edit, std::max(452, cx - 32), 104, 56, 24, TRUE);
-        MoveWindow(app->hwnd_status, 12, 156, std::max(200, cx - 24), 20, TRUE);
+        MoveWindow(app->hwnd_status, 12, 124, std::max(200, cx - 24), 20, TRUE);
         return 0;
     }
     case WM_DESTROY:
@@ -791,7 +639,7 @@ int APIENTRY wWinMain(
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         640,
-        280,
+        240,
         nullptr,
         nullptr,
         hInst,
