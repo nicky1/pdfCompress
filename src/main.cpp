@@ -229,17 +229,22 @@ std::wstring FindGhostscriptExe() {
     return {};
 }
 
-std::wstring PdfSettingsForMode(CompressionMode mode) {
+struct GsProfile {
+    int dpi = 150;
+    int jpeg_q = 70;
+};
+
+GsProfile ProfileForMode(CompressionMode mode) {
     switch (mode) {
     case CompressionMode::kStrongHigh:
-        return L"/printer";
+        return GsProfile{220, 82};
     case CompressionMode::kStrongMedium:
-        return L"/ebook";
+        return GsProfile{150, 68};
     case CompressionMode::kStrongLow:
-        return L"/screen";
+        return GsProfile{110, 52};
     case CompressionMode::kNormalQpdf:
     default:
-        return L"/ebook";
+        return GsProfile{150, 68};
     }
 }
 
@@ -250,13 +255,25 @@ void RunGhostscriptCompress(std::wstring const& in_w, std::wstring const& out_w,
                                  "Program Files/gs 下查找 gswin64c.exe。");
     }
 
-    std::wstring const settings = PdfSettingsForMode(mode);
+    GsProfile const profile = ProfileForMode(mode);
+    std::wstring const qfactor = std::to_wstring(std::max(1, std::min(100, profile.jpeg_q))) + L"/100.0";
     std::wstring cmd = QuoteArg(gs_exe) + L" -q -dSAFER -dBATCH -dNOPAUSE"
                        L" -sDEVICE=pdfwrite -dCompatibilityLevel=1.4"
                        L" -dDetectDuplicateImages=true -dCompressFonts=true -dSubsetFonts=true"
                        L" -dAutoRotatePages=/None"
+                       L" -dColorImageDownsampleType=/Bicubic -dGrayImageDownsampleType=/Bicubic"
+                       L" -dColorImageResolution=" + std::to_wstring(profile.dpi) +
+                       L" -dGrayImageResolution=" + std::to_wstring(profile.dpi) +
+                       L" -dMonoImageResolution=" + std::to_wstring(profile.dpi) +
+                       L" -dDownsampleColorImages=true -dDownsampleGrayImages=true"
+                       L" -dColorImageFilter=/DCTEncode -dGrayImageFilter=/DCTEncode"
+                       L" -c " +
+                       QuoteArg(L"<< /ColorImageDict << /QFactor " + qfactor +
+                                L" /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> "
+                                L"/GrayImageDict << /QFactor " +
+                                qfactor + L" /Blend 1 >> >> setdistillerparams") +
                        L" -sOutputFile=" +
-                       QuoteArg(out_w) + L" -dPDFSETTINGS=" + settings + L" " + QuoteArg(in_w);
+                       QuoteArg(out_w) + L" " + QuoteArg(in_w);
 
     std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
     cmdline.push_back(L'\0');
