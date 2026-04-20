@@ -1,0 +1,43 @@
+# 在 GitHub 云端 Windows 环境编译出 pdf_compress.exe，并作为 Artifact 供下载。
+# 使用方式：把本仓库推到 GitHub → 打开 Actions → 选择 “Build Windows exe” → 进入最新一次运行 → Artifacts 下载 zip（解压即 exe）。
+# 本地电脑无需安装 CMake / vcpkg；仅需浏览器下载产物（首次编译约数分钟，请等待工作流完成）。
+name: Build Windows exe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+env:
+  VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+  VCPKG_DEFAULT_TRIPLET: x64-windows-static
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone and bootstrap vcpkg
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Configure (Release, static)
+        shell: pwsh
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf_compress-windows-x64
+          path: build/Release/pdf_compress.exe
