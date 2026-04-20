@@ -16,6 +16,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -30,11 +31,20 @@ constexpr int kIdPick = 1001;
 constexpr int kIdCompress = 1002;
 constexpr int kIdPathEdit = 1003;
 constexpr int kIdStatus = 1004;
+constexpr int kIdModeCombo = 1005;
 
 struct AppState {
     HWND hwnd_main = nullptr;
     HWND hwnd_path = nullptr;
     HWND hwnd_status = nullptr;
+    HWND hwnd_mode = nullptr;
+};
+
+enum class CompressionMode {
+    kNormalQpdf = 0,
+    kStrongHigh = 1,
+    kStrongMedium = 2,
+    kStrongLow = 3,
 };
 
 std::wstring Utf8ToWide(std::string const& utf8) {
@@ -101,9 +111,104 @@ void CompressPdfUtf8Paths(std::string const& in_utf8, std::string const& out_utf
     qpdf.processFile(in_utf8.c_str());
 
     QPDFWriter writer(qpdf, out_utf8.c_str());
+    // 尽可能重写并压缩可压缩流（主要是 Flate/文本类对象）。
+    writer.setCompressStreams(true);
+    writer.setRecompressFlate(true);
+    writer.setDecodeLevel(qpdf_dl_all);
     writer.setStreamDataMode(qpdf_s_compress);
+    writer.setCompressionLevel(9);
     writer.setObjectStreamMode(qpdf_o_generate);
     writer.write();
+}
+
+std::wstring QuoteArg(std::wstring const& value) {
+    std::wstring out = L"\"";
+    for (wchar_t ch : value) {
+        if (ch == L'"') {
+            out += L"\\\"";
+        } else {
+            out += ch;
+        }
+    }
+    out += L"\"";
+    return out;
+}
+
+std::wstring FindGhostscriptExe() {
+    wchar_t full[MAX_PATH] = {0};
+    DWORD n = SearchPathW(nullptr, L"gswin64c.exe", nullptr, MAX_PATH, full, nullptr);
+    if (n > 0 && n < MAX_PATH) {
+        return std::wstring(full);
+    }
+    n = SearchPathW(nullptr, L"gswin32c.exe", nullptr, MAX_PATH, full, nullptr);
+    if (n > 0 && n < MAX_PATH) {
+        return std::wstring(full);
+    }
+    n = SearchPathW(nullptr, L"gs.exe", nullptr, MAX_PATH, full, nullptr);
+    if (n > 0 && n < MAX_PATH) {
+        return std::wstring(full);
+    }
+    return {};
+}
+
+std::wstring PdfSettingsForMode(CompressionMode mode) {
+    switch (mode) {
+    case CompressionMode::kStrongHigh:
+        return L"/printer";
+    case CompressionMode::kStrongMedium:
+        return L"/ebook";
+    case CompressionMode::kStrongLow:
+        return L"/screen";
+    case CompressionMode::kNormalQpdf:
+    default:
+        return L"/ebook";
+    }
+}
+
+void RunGhostscriptCompress(std::wstring const& in_w, std::wstring const& out_w, CompressionMode mode) {
+    std::wstring const gs_exe = FindGhostscriptExe();
+    if (gs_exe.empty()) {
+        throw std::runtime_error(
+            "未找到 Ghostscript。请先安装 Ghostscript，并确保 gswin64c.exe 在 PATH 环境变量中。");
+    }
+
+    std::wstring const settings = PdfSettingsForMode(mode);
+    std::wstring cmd = QuoteArg(gs_exe) + L" -q -dSAFER -dBATCH -dNOPAUSE"
+                       L" -sDEVICE=pdfwrite -dCompatibilityLevel=1.4"
+                       L" -dDetectDuplicateImages=true -dCompressFonts=true -dSubsetFonts=true"
+                       L" -dAutoRotatePages=/None"
+                       L" -sOutputFile=" +
+                       QuoteArg(out_w) + L" -dPDFSETTINGS=" + settings + L" " + QuoteArg(in_w);
+
+    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
+    cmdline.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    BOOL ok = CreateProcessW(
+        nullptr,
+        cmdline.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        nullptr,
+        &si,
+        &pi);
+    if (!ok) {
+        throw std::runtime_error("Ghostscript 启动失败。");
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exit_code = 0;
+    GetExitCodeProcess(pi.hProcess, &exit_code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (exit_code != 0) {
+        throw std::runtime_error("Ghostscript 压缩失败（退出码非 0）。");
+    }
 }
 
 void OnPick(AppState* app) {
@@ -146,16 +251,24 @@ void OnCompress(AppState* app) {
     std::wstring const out_w = BuildOutputPathW(input_w);
     std::string const in_u8 = WideToUtf8(input_w.wstring());
     std::string const out_u8 = WideToUtf8(out_w);
+    CompressionMode const mode = static_cast<CompressionMode>(
+        SendMessageW(app->hwnd_mode, CB_GETCURSEL, 0, 0));
 
     SetStatus(app, L"正在压缩…");
     EnableWindow(GetDlgItem(app->hwnd_main, kIdPick), FALSE);
     EnableWindow(GetDlgItem(app->hwnd_main, kIdCompress), FALSE);
+    EnableWindow(GetDlgItem(app->hwnd_main, kIdModeCombo), FALSE);
 
     try {
-        CompressPdfUtf8Paths(in_u8, out_u8);
+        if (mode == CompressionMode::kNormalQpdf) {
+            CompressPdfUtf8Paths(in_u8, out_u8);
+        } else {
+            RunGhostscriptCompress(input_w.wstring(), out_w, mode);
+        }
     } catch (std::exception const& e) {
         EnableWindow(GetDlgItem(app->hwnd_main, kIdPick), TRUE);
         EnableWindow(GetDlgItem(app->hwnd_main, kIdCompress), TRUE);
+        EnableWindow(GetDlgItem(app->hwnd_main, kIdModeCombo), TRUE);
         SetStatus(app, L"压缩失败。");
         auto const wmsg = Utf8ToWide(e.what());
         MessageBoxW(app->hwnd_main, wmsg.empty() ? L"未知错误。" : wmsg.c_str(), L"错误", MB_OK | MB_ICONERROR);
@@ -164,6 +277,7 @@ void OnCompress(AppState* app) {
 
     EnableWindow(GetDlgItem(app->hwnd_main, kIdPick), TRUE);
     EnableWindow(GetDlgItem(app->hwnd_main, kIdCompress), TRUE);
+    EnableWindow(GetDlgItem(app->hwnd_main, kIdModeCombo), TRUE);
     SetStatus(app, L"完成。");
     MessageBoxW(app->hwnd_main, out_w.c_str(), L"已保存", MB_OK | MB_ICONINFORMATION);
 }
@@ -235,13 +349,46 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             inst,
             nullptr);
 
+        CreateWindowExW(
+            0,
+            L"STATIC",
+            L"压缩模式：",
+            WS_CHILD | WS_VISIBLE,
+            280,
+            76,
+            72,
+            20,
+            hwnd,
+            nullptr,
+            inst,
+            nullptr);
+
+        app->hwnd_mode = CreateWindowExW(
+            0,
+            WC_COMBOBOXW,
+            L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            356,
+            72,
+            216,
+            180,
+            hwnd,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdModeCombo)),
+            inst,
+            nullptr);
+        SendMessageW(app->hwnd_mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"普通压缩（QPDF）"));
+        SendMessageW(app->hwnd_mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"强压缩-高质量（Ghostscript）"));
+        SendMessageW(app->hwnd_mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"强压缩-中质量（Ghostscript）"));
+        SendMessageW(app->hwnd_mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"强压缩-低质量（Ghostscript）"));
+        SendMessageW(app->hwnd_mode, CB_SETCURSEL, static_cast<WPARAM>(CompressionMode::kStrongMedium), 0);
+
         app->hwnd_status = CreateWindowExW(
             0,
             L"STATIC",
             L"就绪",
             WS_CHILD | WS_VISIBLE,
             12,
-            112,
+            124,
             560,
             20,
             hwnd,
@@ -281,7 +428,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_GETMINMAXINFO: {
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
         mmi->ptMinTrackSize.x = 620;
-        mmi->ptMinTrackSize.y = 200;
+        mmi->ptMinTrackSize.y = 220;
         return 0;
     }
     case WM_SIZE: {
@@ -292,7 +439,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         int const cy = HIWORD(lParam);
         (void)cy;
         MoveWindow(app->hwnd_path, 12, 36, std::max(200, cx - 24), 24, TRUE);
-        MoveWindow(app->hwnd_status, 12, 112, std::max(200, cx - 24), 20, TRUE);
+        MoveWindow(app->hwnd_mode, std::max(220, cx - 264), 72, 252, 180, TRUE);
+        MoveWindow(app->hwnd_status, 12, 124, std::max(200, cx - 24), 20, TRUE);
         return 0;
     }
     case WM_DESTROY:
@@ -339,7 +487,7 @@ int APIENTRY wWinMain(
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         640,
-        220,
+        240,
         nullptr,
         nullptr,
         hInst,
