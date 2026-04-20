@@ -1,0 +1,6 @@
+{
+  "name": "pdf-compress",
+  "version-string": "0.1.0",
+  "description": "Windows PDF compressor (QPDF)",
+  "dependencies": ["qpdf"]
+}
