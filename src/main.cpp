@@ -133,6 +133,29 @@ std::wstring QuoteArg(std::wstring const& value) {
     return out;
 }
 
+std::string ReadFileBytesUtf8(std::wstring const& path, DWORD max_bytes) {
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        return {};
+    }
+    std::string out;
+    out.reserve(static_cast<size_t>(max_bytes));
+    constexpr DWORD kBuf = 4096;
+    char buf[kBuf];
+    DWORD total = 0;
+    while (total < max_bytes) {
+        DWORD to_read = std::min<DWORD>(kBuf, max_bytes - total);
+        DWORD got = 0;
+        if (!ReadFile(f, buf, to_read, &got, nullptr) || got == 0) {
+            break;
+        }
+        out.append(buf, buf + got);
+        total += got;
+    }
+    CloseHandle(f);
+    return out;
+}
+
 std::wstring FindGhostscriptExe() {
     auto file_exists = [](std::wstring const& p) -> bool {
         DWORD attrs = GetFileAttributesW(p.c_str());
@@ -256,7 +279,6 @@ void RunGhostscriptCompress(std::wstring const& in_w, std::wstring const& out_w,
     }
 
     GsProfile const profile = ProfileForMode(mode);
-    std::wstring const qfactor = std::to_wstring(std::max(1, std::min(100, profile.jpeg_q))) + L"/100.0";
     std::wstring cmd = QuoteArg(gs_exe) + L" -q -dSAFER -dBATCH -dNOPAUSE"
                        L" -sDEVICE=pdfwrite -dCompatibilityLevel=1.4"
                        L" -dDetectDuplicateImages=true -dCompressFonts=true -dSubsetFonts=true"
@@ -267,43 +289,73 @@ void RunGhostscriptCompress(std::wstring const& in_w, std::wstring const& out_w,
                        L" -dMonoImageResolution=" + std::to_wstring(profile.dpi) +
                        L" -dDownsampleColorImages=true -dDownsampleGrayImages=true"
                        L" -dColorImageFilter=/DCTEncode -dGrayImageFilter=/DCTEncode"
-                       L" -c " +
-                       QuoteArg(L"<< /ColorImageDict << /QFactor " + qfactor +
-                                L" /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> "
-                                L"/GrayImageDict << /QFactor " +
-                                qfactor + L" /Blend 1 >> >> setdistillerparams") +
+                       L" -dJPEGQ=" + std::to_wstring(std::max(1, std::min(100, profile.jpeg_q))) +
                        L" -sOutputFile=" +
                        QuoteArg(out_w) + L" " + QuoteArg(in_w);
 
     std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
     cmdline.push_back(L'\0');
 
+    std::wstring const log_w = out_w + L".ghostscript.log.txt";
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.lpSecurityDescriptor = nullptr;
+    sa.bInheritHandle = TRUE;
+    HANDLE log_h = CreateFileW(
+        log_w.c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &sa,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+
     STARTUPINFOW si{};
     si.cb = sizeof(si);
+    if (log_h != INVALID_HANDLE_VALUE) {
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        si.hStdOutput = log_h;
+        si.hStdError = log_h;
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    }
     PROCESS_INFORMATION pi{};
     BOOL ok = CreateProcessW(
         nullptr,
         cmdline.data(),
         nullptr,
         nullptr,
-        FALSE,
+        log_h != INVALID_HANDLE_VALUE ? TRUE : FALSE,
         CREATE_NO_WINDOW,
         nullptr,
         nullptr,
         &si,
         &pi);
     if (!ok) {
+        if (log_h != INVALID_HANDLE_VALUE) {
+            CloseHandle(log_h);
+        }
         throw std::runtime_error("Ghostscript 启动失败。");
     }
 
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD exit_code = 0;
     GetExitCodeProcess(pi.hProcess, &exit_code);
+    if (log_h != INVALID_HANDLE_VALUE) {
+        CloseHandle(log_h);
+    }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     if (exit_code != 0) {
-        throw std::runtime_error("Ghostscript 压缩失败（退出码非 0）。");
+        std::string const log_excerpt = ReadFileBytesUtf8(log_w, 8192);
+        std::string msg = "Ghostscript 压缩失败（退出码 " + std::to_string(exit_code) + "）。";
+        if (!log_excerpt.empty()) {
+            msg += "\n日志片段：\n" + log_excerpt;
+        } else {
+            msg += "\n日志文件：" + WideToUtf8(log_w);
+        }
+        throw std::runtime_error(msg);
     }
+    DeleteFileW(log_w.c_str());
 }
 
 void OnPick(AppState* app) {
