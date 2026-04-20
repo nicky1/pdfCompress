@@ -116,7 +116,6 @@ void CompressPdfUtf8Paths(std::string const& in_utf8, std::string const& out_utf
     writer.setRecompressFlate(true);
     writer.setDecodeLevel(qpdf_dl_all);
     writer.setStreamDataMode(qpdf_s_compress);
-    writer.setCompressionLevel(9);
     writer.setObjectStreamMode(qpdf_o_generate);
     writer.write();
 }
